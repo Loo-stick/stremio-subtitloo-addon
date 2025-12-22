@@ -1,0 +1,27 @@
+{
+  "name": "stremio-opensubtitles-fr",
+  "version": "1.0.0",
+  "description": "Addon Stremio pour récupérer des sous-titres français depuis OpenSubtitles",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": [
+    "stremio",
+    "addon",
+    "subtitles",
+    "opensubtitles",
+    "french"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "stremio-addon-sdk": "^1.6.10",
+    "dotenv": "^16.3.1",
+    "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
