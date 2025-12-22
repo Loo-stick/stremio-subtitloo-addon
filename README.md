@@ -4,26 +4,28 @@ Addon Stremio pour recuperer des sous-titres francais depuis plusieurs sources.
 
 ## Sources supportees
 
-| Source | Description | API Key |
-|--------|-------------|---------|
-| **OpenSubtitles** | La plus grande base de sous-titres | [Obtenir](https://www.opensubtitles.com/consumers) |
-| **SubDL** | Base alternative avec contenu different | [Obtenir](https://subdl.com) |
+| Source | Contenu | API Key | Prefixe affiche |
+|--------|---------|---------|-----------------|
+| **OpenSubtitles** | Films + Series | [Obtenir](https://www.opensubtitles.com/consumers) | `[OS]` |
+| **SubDL** | Films + Series | [Obtenir](https://subdl.com) | `[SubDL]` |
+| **YIFY** | Films uniquement | Aucune requise | `[YIFY]` |
 
-> Au moins une source doit etre configuree pour que l'addon fonctionne.
+> YIFY est active par defaut sans configuration. Pour les series, configurez OpenSubtitles ou SubDL.
 
 ## Fonctionnalites
 
 - Recherche sur plusieurs sources en parallele
 - Sous-titres francais uniquement
 - Support des films et series (avec gestion saison/episode)
-- Tri par popularite (nombre de telechargements)
+- Affichage de la source pour chaque sous-titre
+- Tri par popularite/rating
 - Retourne jusqu'a 15 sous-titres par source
 - Gestion du rate limiting avec retry automatique
 
 ## Prerequis
 
 - Node.js >= 14.0.0
-- Au moins une cle API (OpenSubtitles ou SubDL)
+- Au moins une source active (YIFY fonctionne sans cle API)
 
 ## Installation
 
@@ -34,21 +36,24 @@ Addon Stremio pour recuperer des sous-titres francais depuis plusieurs sources.
 npm install
 ```
 
-3. Configurez vos credentials:
+3. Configurez vos credentials (optionnel si vous utilisez seulement YIFY):
 ```bash
 cp .env.example .env
 ```
 
-4. Editez le fichier `.env` et ajoutez vos cles API:
+4. Editez le fichier `.env`:
 ```bash
-# Au moins une des deux sources
+# Optionnel - pour films + series
 OPENSUBTITLES_API_KEY=votre_cle_opensubtitles
 SUBDL_API_KEY=votre_cle_subdl
+
+# YIFY est active par defaut (films uniquement)
+ENABLE_YIFY=true
 ```
 
 ## Obtenir les cles API
 
-### OpenSubtitles
+### OpenSubtitles (recommande pour les series)
 1. Creez un compte sur [OpenSubtitles](https://www.opensubtitles.com)
 2. Allez dans [API Consumers](https://www.opensubtitles.com/consumers)
 3. Creez une nouvelle application
@@ -56,9 +61,11 @@ SUBDL_API_KEY=votre_cle_subdl
 
 ### SubDL
 1. Creez un compte sur [SubDL](https://subdl.com)
-2. Allez dans les parametres de votre compte
-3. Generez une cle API
-4. Copiez votre API Key
+2. Allez dans [Panel API](https://subdl.com/panel/api)
+3. Copiez votre API Key
+
+### YIFY
+Aucune cle requise ! Active par defaut.
 
 ## Demarrage
 
@@ -77,15 +84,15 @@ L'addon sera accessible sur `http://localhost:7000`
 5. Collez l'URL: `http://localhost:7000/manifest.json`
 6. Cliquez sur **Install**
 
-## Utilisation
+## Affichage dans Stremio
 
-Une fois installe, l'addon fournira automatiquement les sous-titres francais quand vous regardez un film ou une serie dans Stremio.
+Les sous-titres sont affiches avec leur source identifiable :
 
-Les sous-titres affichent:
-- La source (OpenSubtitles ou SubDL)
-- Le nombre de telechargements (indicateur de qualite)
-- Le nom de la release
-- L'uploadeur
+```
+[OS] [1234↓] NomDeLaRelease        <- OpenSubtitles (avec downloads)
+[SubDL] NomDeLaRelease             <- SubDL
+[YIFY] [★8] NomDeLaRelease         <- YIFY (avec rating)
+```
 
 ## Structure du projet
 
@@ -94,7 +101,8 @@ stremio-subtitles-fr/
 ├── index.js              # Point d'entree, config addon
 ├── lib/
 │   ├── opensubtitles.js  # Client API OpenSubtitles
-│   └── subdl.js          # Client API SubDL
+│   ├── subdl.js          # Client API SubDL
+│   └── yify.js           # Client API YIFY
 ├── .env.example          # Template des variables
 ├── .env                  # Credentials (gitignore)
 ├── .gitignore
@@ -106,12 +114,11 @@ stremio-subtitles-fr/
 
 | Variable | Description | Obligatoire |
 |----------|-------------|-------------|
-| `OPENSUBTITLES_API_KEY` | Cle API OpenSubtitles | Non* |
+| `OPENSUBTITLES_API_KEY` | Cle API OpenSubtitles | Non |
 | `OPENSUBTITLES_USER_AGENT` | User-Agent custom | Non |
-| `SUBDL_API_KEY` | Cle API SubDL | Non* |
+| `SUBDL_API_KEY` | Cle API SubDL | Non |
+| `ENABLE_YIFY` | Activer YIFY (defaut: true) | Non |
 | `PORT` | Port du serveur | Non (defaut: 7000) |
-
-\* Au moins une des deux cles API doit etre configuree.
 
 ## Debug
 
@@ -127,8 +134,9 @@ Pour ajouter une nouvelle source de sous-titres:
 
 1. Creer un nouveau fichier dans `lib/` (ex: `lib/newsource.js`)
 2. Implementer les methodes `searchSubtitles()` et `formatForStremio()`
-3. Ajouter le client dans `index.js`
-4. Mettre a jour `.env.example` et `README.md`
+3. Ajouter un prefixe unique dans `SubDisplayTitle` (ex: `[NEW]`)
+4. Ajouter le client dans `index.js`
+5. Mettre a jour `.env.example` et `README.md`
 
 ## Licence
 

@@ -3,8 +3,9 @@
  *
  * Point d'entrée de l'addon Stremio pour récupérer
  * des sous-titres français depuis plusieurs sources:
- * - OpenSubtitles
- * - SubDL
+ * - OpenSubtitles (API key requise)
+ * - SubDL (API key requise)
+ * - YIFY (pas de clé requise, films uniquement)
  *
  * @module index
  */
@@ -14,18 +15,21 @@ require('dotenv').config();
 const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
 const OpenSubtitlesClient = require('./lib/opensubtitles');
 const SubDLClient = require('./lib/subdl');
+const YIFYClient = require('./lib/yify');
 
 // Configuration des variables d'environnement
 const OS_API_KEY = process.env.OPENSUBTITLES_API_KEY;
 const OS_USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || 'stremio-subtitles-fr v1.0';
 const SUBDL_API_KEY = process.env.SUBDL_API_KEY;
+const ENABLE_YIFY = process.env.ENABLE_YIFY !== 'false'; // Activé par défaut
 const PORT = parseInt(process.env.PORT, 10) || 7000;
 
-// Initialisation des clients (optionnels)
+// Initialisation des clients
 let osClient = null;
 let subdlClient = null;
+let yifyClient = null;
 
-// Vérification qu'au moins une source est configurée
+// Liste des sources actives
 const sources = [];
 
 if (OS_API_KEY && OS_API_KEY !== 'your_api_key_here') {
@@ -40,9 +44,17 @@ if (SUBDL_API_KEY && SUBDL_API_KEY !== 'your_api_key_here') {
     console.log('[Addon] Source activée: SubDL');
 }
 
+// YIFY est toujours disponible (pas de clé API requise)
+if (ENABLE_YIFY) {
+    yifyClient = new YIFYClient();
+    sources.push('YIFY');
+    console.log('[Addon] Source activée: YIFY (films uniquement)');
+}
+
 if (sources.length === 0) {
     console.error('[Addon] Erreur: Aucune source configurée!');
-    console.error('[Addon] Configurez au moins OPENSUBTITLES_API_KEY ou SUBDL_API_KEY dans .env');
+    console.error('[Addon] Configurez OPENSUBTITLES_API_KEY ou SUBDL_API_KEY dans .env');
+    console.error('[Addon] Ou activez YIFY avec ENABLE_YIFY=true');
     process.exit(1);
 }
 
@@ -53,7 +65,7 @@ if (sources.length === 0) {
  */
 const manifest = {
     id: 'community.subtitles.fr',
-    version: '1.1.0',
+    version: '1.2.0',
     name: 'Subtitles FR',
     description: `Sous-titres français (${sources.join(' + ')})`,
     logo: 'https://www.opensubtitles.org/favicon.ico',
@@ -108,6 +120,10 @@ builder.defineSubtitlesHandler(async (args) => {
 
         if (subdlClient) {
             searchPromises.push(searchSubDL(parsed));
+        }
+
+        if (yifyClient) {
+            searchPromises.push(searchYIFY(parsed));
         }
 
         // Attend tous les résultats
@@ -178,6 +194,30 @@ async function searchSubDL(parsed) {
         return subdlClient.formatForStremio(subtitles);
     } catch (error) {
         console.error('[Addon] Erreur SubDL:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Recherche des sous-titres sur YIFY
+ *
+ * @param {Object} parsed - Informations parsées du contenu
+ * @returns {Promise<Array>} Sous-titres formatés pour Stremio
+ */
+async function searchYIFY(parsed) {
+    try {
+        const subtitles = await yifyClient.searchSubtitles({
+            imdbId: parsed.imdbId,
+            type: parsed.type
+        });
+
+        if (subtitles.length === 0) {
+            return [];
+        }
+
+        return yifyClient.formatForStremio(subtitles);
+    } catch (error) {
+        console.error('[Addon] Erreur YIFY:', error.message);
         return [];
     }
 }
