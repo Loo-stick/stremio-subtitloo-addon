@@ -20,12 +20,13 @@ const SubDLClient = require('./lib/subdl');
 const YIFYClient = require('./lib/yify');
 
 // Configuration des variables d'environnement
-const ADDON_URL = process.env.ADDON_URL || `http://localhost:${process.env.PORT || 7000}`;
+const PORT = parseInt(process.env.PORT, 10) || 7000;
+const ADDON_URL_CONFIGURED = !!process.env.ADDON_URL;
+let addonUrl = process.env.ADDON_URL || `http://localhost:${PORT}`;
 const OS_API_KEY = process.env.OPENSUBTITLES_API_KEY;
 const OS_USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || 'stremio-subtitles-fr v1.0';
 const SUBDL_API_KEY = process.env.SUBDL_API_KEY;
 const ENABLE_YIFY = process.env.ENABLE_YIFY !== 'false';
-const PORT = parseInt(process.env.PORT, 10) || 7000;
 
 // Initialisation des clients
 let osClient = null;
@@ -150,7 +151,7 @@ async function searchOpenSubtitles(parsed) {
         }
 
         // Passe l'URL de l'addon pour générer les URLs de proxy
-        return osClient.formatForStremio(subtitles, ADDON_URL);
+        return osClient.formatForStremio(subtitles, addonUrl);
     } catch (error) {
         console.error('[Addon] Erreur OpenSubtitles:', error.message);
         return [];
@@ -236,6 +237,19 @@ function parseId(id, type) {
 
 const app = express();
 
+// Middleware pour détecter l'URL automatiquement si non configurée
+app.use((req, res, next) => {
+    if (!ADDON_URL_CONFIGURED && req.headers.host) {
+        const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+        const detectedUrl = `${protocol}://${req.headers.host}`;
+        if (addonUrl !== detectedUrl) {
+            addonUrl = detectedUrl;
+            console.log(`[Addon] URL détectée automatiquement: ${addonUrl}`);
+        }
+    }
+    next();
+});
+
 // Route proxy pour OpenSubtitles (lazy download)
 app.get('/proxy/os/:fileId', async (req, res) => {
     const { fileId } = req.params;
@@ -287,17 +301,25 @@ app.listen(PORT, () => {
     console.log(`[Addon] Subtitles FR Addon v1.3.0 démarré!`);
     console.log(`[Addon] Sources: ${sources.join(', ')}`);
     console.log(`[Addon] Port: ${PORT}`);
-    console.log(`[Addon] URL publique: ${ADDON_URL}`);
-    console.log(`[Addon] Manifest: ${ADDON_URL}/manifest.json`);
+
+    if (ADDON_URL_CONFIGURED) {
+        console.log(`[Addon] URL publique: ${addonUrl}`);
+    } else {
+        console.log(`[Addon] ⚠️  ADDON_URL non configurée (auto-détection activée)`);
+        console.log(`[Addon] URL par défaut: ${addonUrl}`);
+    }
+
+    console.log(`[Addon] Manifest: ${addonUrl}/manifest.json`);
     console.log(`[Addon] ========================================\n`);
     console.log(`[Addon] Pour installer dans Stremio:`);
     console.log(`[Addon] 1. Ouvrez Stremio`);
     console.log(`[Addon] 2. Allez dans Addons > Community Addons`);
-    console.log(`[Addon] 3. Collez: ${ADDON_URL}/manifest.json`);
+    console.log(`[Addon] 3. Collez: ${addonUrl}/manifest.json`);
     console.log(`[Addon] ========================================\n`);
     console.log(`[Addon] ⚡ Optimisations activées:`);
     console.log(`[Addon]   - Proxy pour OpenSubtitles (lazy download)`);
     console.log(`[Addon]   - Cache des liens (TTL 3h)`);
+    console.log(`[Addon]   - Dédup in-flight (évite les appels simultanés)`);
     console.log(`[Addon]   - Max 5 résultats par source`);
     console.log(`[Addon] ========================================\n`);
 });
