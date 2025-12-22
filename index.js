@@ -3,7 +3,7 @@
  *
  * Point d'entrée de l'addon Stremio pour récupérer
  * des sous-titres français depuis plusieurs sources:
- * - OpenSubtitles (API key requise)
+ * - OpenSubtitles (API key requise, proxy pour lazy download)
  * - SubDL (API key requise)
  * - YIFY (pas de clé requise, films uniquement)
  *
@@ -12,16 +12,19 @@
 
 require('dotenv').config();
 
-const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
+const express = require('express');
+const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 const OpenSubtitlesClient = require('./lib/opensubtitles');
+const { RateLimitError } = require('./lib/opensubtitles');
 const SubDLClient = require('./lib/subdl');
 const YIFYClient = require('./lib/yify');
 
 // Configuration des variables d'environnement
+const ADDON_URL = process.env.ADDON_URL || `http://localhost:${process.env.PORT || 7000}`;
 const OS_API_KEY = process.env.OPENSUBTITLES_API_KEY;
 const OS_USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || 'stremio-subtitles-fr v1.0';
 const SUBDL_API_KEY = process.env.SUBDL_API_KEY;
-const ENABLE_YIFY = process.env.ENABLE_YIFY !== 'false'; // Activé par défaut
+const ENABLE_YIFY = process.env.ENABLE_YIFY !== 'false';
 const PORT = parseInt(process.env.PORT, 10) || 7000;
 
 // Initialisation des clients
@@ -35,7 +38,7 @@ const sources = [];
 if (OS_API_KEY && OS_API_KEY !== 'your_api_key_here') {
     osClient = new OpenSubtitlesClient(OS_API_KEY, OS_USER_AGENT);
     sources.push('OpenSubtitles');
-    console.log('[Addon] Source activée: OpenSubtitles');
+    console.log('[Addon] Source activée: OpenSubtitles (avec proxy)');
 }
 
 if (SUBDL_API_KEY && SUBDL_API_KEY !== 'your_api_key_here') {
@@ -44,7 +47,6 @@ if (SUBDL_API_KEY && SUBDL_API_KEY !== 'your_api_key_here') {
     console.log('[Addon] Source activée: SubDL');
 }
 
-// YIFY est toujours disponible (pas de clé API requise)
 if (ENABLE_YIFY) {
     yifyClient = new YIFYClient();
     sources.push('YIFY');
@@ -60,12 +62,10 @@ if (sources.length === 0) {
 
 /**
  * Manifest de l'addon Stremio
- *
- * Définit les métadonnées et capacités de l'addon.
  */
 const manifest = {
     id: 'community.subtitles.fr',
-    version: '1.2.0',
+    version: '1.3.0',
     name: 'Subtitles FR',
     description: `Sous-titres français (${sources.join(' + ')})`,
     logo: 'https://www.opensubtitles.org/favicon.ico',
@@ -84,15 +84,6 @@ const builder = new addonBuilder(manifest);
 
 /**
  * Handler pour les requêtes de sous-titres
- *
- * Appelé par Stremio quand l'utilisateur regarde un contenu
- * et demande les sous-titres disponibles.
- * Recherche en parallèle sur toutes les sources activées.
- *
- * @param {Object} args - Arguments de la requête
- * @param {string} args.type - Type de contenu ('movie' ou 'series')
- * @param {string} args.id - Identifiant du contenu (format: tt1234567 ou tt1234567:1:2)
- * @returns {Promise<Object>} Objet contenant les sous-titres
  */
 builder.defineSubtitlesHandler(async (args) => {
     const { type, id } = args;
@@ -101,7 +92,6 @@ builder.defineSubtitlesHandler(async (args) => {
     console.log(`[Addon] Type: ${type}, ID: ${id}`);
 
     try {
-        // Parse l'ID pour extraire IMDB ID et infos de série
         const parsed = parseId(id, type);
 
         if (!parsed.imdbId) {
@@ -126,10 +116,7 @@ builder.defineSubtitlesHandler(async (args) => {
             searchPromises.push(searchYIFY(parsed));
         }
 
-        // Attend tous les résultats
         const results = await Promise.all(searchPromises);
-
-        // Combine les résultats
         const allSubtitles = results.flat();
 
         if (allSubtitles.length === 0) {
@@ -148,9 +135,6 @@ builder.defineSubtitlesHandler(async (args) => {
 
 /**
  * Recherche des sous-titres sur OpenSubtitles
- *
- * @param {Object} parsed - Informations parsées du contenu
- * @returns {Promise<Array>} Sous-titres formatés pour Stremio
  */
 async function searchOpenSubtitles(parsed) {
     try {
@@ -165,7 +149,8 @@ async function searchOpenSubtitles(parsed) {
             return [];
         }
 
-        return await osClient.formatForStremio(subtitles);
+        // Passe l'URL de l'addon pour générer les URLs de proxy
+        return osClient.formatForStremio(subtitles, ADDON_URL);
     } catch (error) {
         console.error('[Addon] Erreur OpenSubtitles:', error.message);
         return [];
@@ -174,9 +159,6 @@ async function searchOpenSubtitles(parsed) {
 
 /**
  * Recherche des sous-titres sur SubDL
- *
- * @param {Object} parsed - Informations parsées du contenu
- * @returns {Promise<Array>} Sous-titres formatés pour Stremio
  */
 async function searchSubDL(parsed) {
     try {
@@ -200,9 +182,6 @@ async function searchSubDL(parsed) {
 
 /**
  * Recherche des sous-titres sur YIFY
- *
- * @param {Object} parsed - Informations parsées du contenu
- * @returns {Promise<Array>} Sous-titres formatés pour Stremio
  */
 async function searchYIFY(parsed) {
     try {
@@ -224,10 +203,6 @@ async function searchYIFY(parsed) {
 
 /**
  * Parse l'identifiant Stremio pour extraire les informations
- *
- * @param {string} id - Identifiant du contenu
- * @param {string} type - Type de contenu
- * @returns {Object} Informations parsées (imdbId, type, season, episode)
  */
 function parseId(id, type) {
     const result = {
@@ -239,18 +214,15 @@ function parseId(id, type) {
 
     if (!id) return result;
 
-    // Format pour les séries: tt1234567:saison:episode
     if (type === 'series' && id.includes(':')) {
         const parts = id.split(':');
         result.imdbId = parts[0];
         result.season = parseInt(parts[1], 10) || null;
         result.episode = parseInt(parts[2], 10) || null;
     } else {
-        // Format simple pour les films: tt1234567
         result.imdbId = id.split(':')[0];
     }
 
-    // Validation format IMDB ID
     if (!result.imdbId || !result.imdbId.match(/^tt\d+$/)) {
         result.imdbId = null;
     }
@@ -258,17 +230,74 @@ function parseId(id, type) {
     return result;
 }
 
-// Démarrage du serveur HTTP
-serveHTTP(builder.getInterface(), { port: PORT });
+// ============================================
+// Serveur Express avec routes personnalisées
+// ============================================
 
-console.log(`\n[Addon] ========================================`);
-console.log(`[Addon] Subtitles FR Addon démarré!`);
-console.log(`[Addon] Sources: ${sources.join(', ')}`);
-console.log(`[Addon] Port: ${PORT}`);
-console.log(`[Addon] URL: http://localhost:${PORT}/manifest.json`);
-console.log(`[Addon] ========================================\n`);
-console.log(`[Addon] Pour installer dans Stremio:`);
-console.log(`[Addon] 1. Ouvrez Stremio`);
-console.log(`[Addon] 2. Allez dans Addons > Community Addons`);
-console.log(`[Addon] 3. Collez: http://localhost:${PORT}/manifest.json`);
-console.log(`[Addon] ========================================\n`);
+const app = express();
+
+// Route proxy pour OpenSubtitles (lazy download)
+app.get('/proxy/os/:fileId', async (req, res) => {
+    const { fileId } = req.params;
+
+    // Validation du fileId (doit être numérique)
+    if (!fileId || !/^\d+$/.test(fileId)) {
+        console.error(`[Proxy] fileId invalide: ${fileId}`);
+        return res.status(400).send('Invalid file ID');
+    }
+
+    console.log(`[Proxy] Demande de téléchargement pour file_id: ${fileId}`);
+
+    if (!osClient) {
+        console.error('[Proxy] OpenSubtitles non configuré');
+        return res.status(503).send('OpenSubtitles not configured');
+    }
+
+    try {
+        const downloadUrl = await osClient.getDownloadLink(parseInt(fileId, 10));
+
+        if (!downloadUrl) {
+            console.error(`[Proxy] Lien non trouvé pour file_id: ${fileId}`);
+            return res.status(404).send('Subtitle not found');
+        }
+
+        console.log(`[Proxy] Redirection vers: ${downloadUrl}`);
+        return res.redirect(downloadUrl);
+
+    } catch (error) {
+        if (error instanceof RateLimitError) {
+            console.error(`[Proxy] Rate limit! Retry-After: ${error.retryAfter}s`);
+            if (error.retryAfter) {
+                res.set('Retry-After', error.retryAfter);
+            }
+            return res.status(429).send('Rate limit exceeded. Please try again later.');
+        }
+
+        console.error(`[Proxy] Erreur: ${error.message}`);
+        return res.status(500).send('Internal server error');
+    }
+});
+
+// Monte le router Stremio sur l'app Express
+app.use(getRouter(builder.getInterface()));
+
+// Démarrage du serveur
+app.listen(PORT, () => {
+    console.log(`\n[Addon] ========================================`);
+    console.log(`[Addon] Subtitles FR Addon v1.3.0 démarré!`);
+    console.log(`[Addon] Sources: ${sources.join(', ')}`);
+    console.log(`[Addon] Port: ${PORT}`);
+    console.log(`[Addon] URL publique: ${ADDON_URL}`);
+    console.log(`[Addon] Manifest: ${ADDON_URL}/manifest.json`);
+    console.log(`[Addon] ========================================\n`);
+    console.log(`[Addon] Pour installer dans Stremio:`);
+    console.log(`[Addon] 1. Ouvrez Stremio`);
+    console.log(`[Addon] 2. Allez dans Addons > Community Addons`);
+    console.log(`[Addon] 3. Collez: ${ADDON_URL}/manifest.json`);
+    console.log(`[Addon] ========================================\n`);
+    console.log(`[Addon] ⚡ Optimisations activées:`);
+    console.log(`[Addon]   - Proxy pour OpenSubtitles (lazy download)`);
+    console.log(`[Addon]   - Cache des liens (TTL 3h)`);
+    console.log(`[Addon]   - Max 5 résultats par source`);
+    console.log(`[Addon] ========================================\n`);
+});

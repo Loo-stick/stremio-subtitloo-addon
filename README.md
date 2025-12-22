@@ -4,23 +4,18 @@ Addon Stremio pour recuperer des sous-titres francais depuis plusieurs sources.
 
 ## Sources supportees
 
-| Source | Contenu | API Key | Prefixe affiche |
-|--------|---------|---------|-----------------|
+| Source | Contenu | API Key | Prefixe |
+|--------|---------|---------|---------|
 | **OpenSubtitles** | Films + Series | [Obtenir](https://www.opensubtitles.com/consumers) | `[OS]` |
 | **SubDL** | Films + Series | [Obtenir](https://subdl.com) | `[SubDL]` |
 | **YIFY** | Films uniquement | Aucune requise | `[YIFY]` |
 
-> YIFY est active par defaut sans configuration. Pour les series, configurez OpenSubtitles ou SubDL.
+## Optimisations (v1.3.0)
 
-## Fonctionnalites
-
-- Recherche sur plusieurs sources en parallele
-- Sous-titres francais uniquement
-- Support des films et series (avec gestion saison/episode)
-- Affichage de la source pour chaque sous-titre
-- Tri par popularite/rating
-- Retourne jusqu'a 15 sous-titres par source
-- Gestion du rate limiting avec retry automatique
+- **Proxy pour OpenSubtitles** : Le lien de telechargement n'est resolu que quand vous cliquez sur un sous-titre (economise 90% des appels API)
+- **Cache des liens** : Les liens OpenSubtitles sont caches pendant 3h
+- **Limite a 5 resultats** par source pour eviter le rate limiting
+- **Fail fast sur 429** : Arret immediat en cas de rate limit
 
 ## Prerequis
 
@@ -36,38 +31,38 @@ Addon Stremio pour recuperer des sous-titres francais depuis plusieurs sources.
 npm install
 ```
 
-3. Configurez vos credentials (optionnel si vous utilisez seulement YIFY):
+3. Configurez vos credentials:
 ```bash
 cp .env.example .env
 ```
 
 4. Editez le fichier `.env`:
 ```bash
-# Optionnel - pour films + series
-OPENSUBTITLES_API_KEY=votre_cle_opensubtitles
-SUBDL_API_KEY=votre_cle_subdl
+# IMPORTANT: URL publique de votre addon
+# Local: http://localhost:7000
+# Render: https://votre-app.onrender.com
+ADDON_URL=http://localhost:7000
 
-# YIFY est active par defaut (films uniquement)
+# Sources (optionnel si vous utilisez seulement YIFY)
+OPENSUBTITLES_API_KEY=votre_cle
+SUBDL_API_KEY=votre_cle
+
+# YIFY est active par defaut
 ENABLE_YIFY=true
 ```
 
-## Obtenir les cles API
+## Deploiement sur Render
 
-### OpenSubtitles (recommande pour les series)
-1. Creez un compte sur [OpenSubtitles](https://www.opensubtitles.com)
-2. Allez dans [API Consumers](https://www.opensubtitles.com/consumers)
-3. Creez une nouvelle application
-4. Copiez votre API Key
+1. Creez un nouveau Web Service sur [Render](https://render.com)
+2. Connectez votre repo GitHub
+3. Configurez les variables d'environnement:
+   - `ADDON_URL` = `https://votre-app.onrender.com` (IMPORTANT!)
+   - `OPENSUBTITLES_API_KEY` = votre cle
+   - `SUBDL_API_KEY` = votre cle
+   - `PORT` = `7000`
+4. Deploy!
 
-### SubDL
-1. Creez un compte sur [SubDL](https://subdl.com)
-2. Allez dans [Panel API](https://subdl.com/panel/api)
-3. Copiez votre API Key
-
-### YIFY
-Aucune cle requise ! Active par defaut.
-
-## Demarrage
+## Demarrage local
 
 ```bash
 npm start
@@ -77,33 +72,32 @@ L'addon sera accessible sur `http://localhost:7000`
 
 ## Installation dans Stremio
 
-1. Demarrez l'addon avec `npm start`
+1. Demarrez l'addon
 2. Ouvrez Stremio
 3. Allez dans **Addons** > **Community Addons**
-4. Cliquez sur l'icone d'ajout (en haut a droite)
-5. Collez l'URL: `http://localhost:7000/manifest.json`
-6. Cliquez sur **Install**
+4. Collez l'URL: `http://localhost:7000/manifest.json` (ou votre URL Render)
+5. Cliquez sur **Install**
 
 ## Affichage dans Stremio
 
-Les sous-titres sont affiches avec leur source identifiable :
+Les sous-titres sont affiches avec leur source :
 
 ```
-[OS] [1234↓] NomDeLaRelease        <- OpenSubtitles (avec downloads)
+[OS] [1234↓] NomDeLaRelease        <- OpenSubtitles
 [SubDL] NomDeLaRelease             <- SubDL
-[YIFY] [★8] NomDeLaRelease         <- YIFY (avec rating)
+[YIFY] [★8] NomDeLaRelease         <- YIFY
 ```
 
-## Structure du projet
+## Architecture
 
 ```
 stremio-subtitles-fr/
-├── index.js              # Point d'entree, config addon
+├── index.js              # Serveur Express + Stremio SDK
 ├── lib/
-│   ├── opensubtitles.js  # Client API OpenSubtitles
+│   ├── opensubtitles.js  # Client API + cache + proxy
 │   ├── subdl.js          # Client API SubDL
 │   └── yify.js           # Client API YIFY
-├── .env.example          # Template des variables
+├── .env.example
 ├── .env                  # Credentials (gitignore)
 ├── .gitignore
 ├── package.json
@@ -114,29 +108,30 @@ stremio-subtitles-fr/
 
 | Variable | Description | Obligatoire |
 |----------|-------------|-------------|
+| `ADDON_URL` | URL publique de l'addon | **Oui** |
 | `OPENSUBTITLES_API_KEY` | Cle API OpenSubtitles | Non |
 | `OPENSUBTITLES_USER_AGENT` | User-Agent custom | Non |
 | `SUBDL_API_KEY` | Cle API SubDL | Non |
 | `ENABLE_YIFY` | Activer YIFY (defaut: true) | Non |
-| `PORT` | Port du serveur | Non (defaut: 7000) |
+| `PORT` | Port du serveur (defaut: 7000) | Non |
 
-## Debug
+## Comment ca marche (OpenSubtitles)
 
-L'addon affiche des logs dans la console pour faciliter le debug:
-- Sources activees au demarrage
-- Recherches lancees sur chaque source
-- Nombre de resultats trouves par source
-- Erreurs API
+```
+1. Stremio demande les sous-titres
+   └─> Addon retourne des URLs proxy: /proxy/os/{file_id}
 
-## Ajouter une nouvelle source
+2. Utilisateur clique sur un sous-titre
+   └─> Stremio appelle: https://addon.com/proxy/os/12345
 
-Pour ajouter une nouvelle source de sous-titres:
+3. Proxy resout le lien (1 seul appel API)
+   └─> Appelle OpenSubtitles /download
+   └─> Cache le resultat 3h
+   └─> Redirige vers le .srt
+```
 
-1. Creer un nouveau fichier dans `lib/` (ex: `lib/newsource.js`)
-2. Implementer les methodes `searchSubtitles()` et `formatForStremio()`
-3. Ajouter un prefixe unique dans `SubDisplayTitle` (ex: `[NEW]`)
-4. Ajouter le client dans `index.js`
-5. Mettre a jour `.env.example` et `README.md`
+**Avant** : 1 recherche + N downloads = N+1 appels API
+**Apres** : 1 recherche + 1 download = 2 appels API
 
 ## Licence
 
