@@ -2,9 +2,18 @@
 
 Addon Stremio pour recuperer des sous-titres francais depuis plusieurs sources.
 
-## Nouveaute v1.4.1 : Cache des recherches
+## Nouveaute v1.4.2 : Badge emoji dans les metadonnees
 
-Les resultats de recherche de sous-titres sont maintenant mis en cache pendant 24h (configurable). Avantages :
+Activez `BADGE_IN_TITLE=true` pour afficher un drapeau 🇫🇷 dans la ligne de metadonnees (annee, duree, note) :
+
+```
+22 min | 1994-2004 🇫🇷 | 8.9 | IMDB    <- Sous-titres FR disponibles
+45 min | 2023 | 7.5 | IMDB              <- Pas de sous-titres FR
+```
+
+## Cache des recherches (v1.4.1)
+
+Les resultats de recherche de sous-titres sont mis en cache pendant 24h (configurable). Avantages :
 - Reponse instantanee si vous relancez le meme episode/film
 - Moins d'appels API = moins de risque de rate limiting
 - Economise votre quota API
@@ -138,6 +147,7 @@ stremio-subtitles-fr/
 | `OPENSUBTITLES_USER_AGENT` | User-Agent custom | Non |
 | `SUBDL_API_KEY` | Cle API SubDL | Non |
 | `SUBTITLES_CACHE_TTL_HOURS` | Duree du cache sous-titres en heures (defaut: 24) | Non |
+| `BADGE_IN_TITLE` | Afficher emoji 🇫🇷 dans le titre (defaut: false) | Non |
 | `ENABLE_YIFY` | Activer YIFY (defaut: true) | Non |
 | `ENABLE_META` | Activer info dispo sur fiche (defaut: true) | Non |
 | `CACHE_TTL_DAYS` | Duree du cache en jours (defaut: 7) | Non |

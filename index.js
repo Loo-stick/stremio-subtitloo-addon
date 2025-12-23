@@ -31,6 +31,7 @@ const OS_USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || 'stremio-subtitles
 const SUBDL_API_KEY = process.env.SUBDL_API_KEY;
 const ENABLE_YIFY = process.env.ENABLE_YIFY !== 'false';
 const ENABLE_META = process.env.ENABLE_META !== 'false';
+const BADGE_IN_TITLE = process.env.BADGE_IN_TITLE === 'true';
 const CACHE_TTL_DAYS = parseInt(process.env.CACHE_TTL_DAYS, 10) || 7;
 const SUBTITLES_CACHE_TTL_HOURS = parseInt(process.env.SUBTITLES_CACHE_TTL_HOURS, 10) || 24;
 
@@ -203,7 +204,7 @@ if (ENABLE_META && hasMetaSource) {
 
 const manifest = {
     id: 'community.subtitles.fr',
-    version: '1.4.1',
+    version: '1.4.2',
     name: 'Subtitles FR',
     description: `Sous-titres français (${sources.join(' + ')})${ENABLE_META && hasMetaSource ? ' + Info dispo' : ''}`,
     logo: 'https://www.opensubtitles.org/favicon.ico',
@@ -333,7 +334,13 @@ if (ENABLE_META && cinemetaClient && subtitleChecker) {
             // Enrichit la description
             meta.description = enrichDescription(meta.description, subtitleInfo);
 
-            console.log(`[Addon] Meta enrichie: "${meta.name}"`);
+            // Ajoute un badge emoji si activé
+            if (BADGE_IN_TITLE) {
+                // Ajoute le badge dans releaseInfo (ligne année/durée)
+                meta.releaseInfo = enrichReleaseInfo(meta.releaseInfo || meta.year, subtitleInfo);
+            }
+
+            console.log(`[Addon] Meta enrichie: "${meta.name}"${BADGE_IN_TITLE && subtitleInfo?.available ? ' 🇫🇷' : ''}`);
             return { meta };
 
         } catch (error) {
@@ -370,6 +377,48 @@ function enrichDescription(originalDesc, subtitleInfo) {
     }
 
     return prefix + (originalDesc || '');
+}
+
+/**
+ * Enrichit le titre avec un badge emoji indiquant la disponibilité
+ *
+ * @param {string} originalTitle - Titre original
+ * @param {Object|null} subtitleInfo - Info sous-titres { available, count, sources } ou null
+ * @returns {string} Titre avec badge
+ */
+function enrichTitle(originalTitle, subtitleInfo) {
+    if (!originalTitle) return originalTitle;
+
+    // Badge selon la disponibilité
+    let badge = '';
+
+    if (subtitleInfo === null) {
+        badge = ' ⏳'; // En attente d'info
+    } else if (subtitleInfo.available) {
+        badge = ' 🇫🇷'; // Sous-titres FR disponibles
+    }
+    // Pas de badge si aucun sous-titre (pour ne pas polluer)
+
+    return originalTitle + badge;
+}
+
+/**
+ * Enrichit releaseInfo avec le badge de sous-titres
+ *
+ * @param {string} originalReleaseInfo - ReleaseInfo original (ex: "1994-2004")
+ * @param {Object|null} subtitleInfo - Info sous-titres
+ * @returns {string} ReleaseInfo avec badge
+ */
+function enrichReleaseInfo(originalReleaseInfo, subtitleInfo) {
+    const base = originalReleaseInfo || '';
+
+    if (subtitleInfo === null) {
+        return base; // Pas d'info, on ne change rien
+    } else if (subtitleInfo.available) {
+        return base ? `${base} 🇫🇷` : '🇫🇷 Subs FR';
+    }
+
+    return base;
 }
 
 /**
@@ -611,6 +660,9 @@ app.listen(PORT, () => {
 
     if (metaCache) {
         console.log(`[Addon]   - Info dispo sous-titres sur fiche (cache ${CACHE_TTL_DAYS}j)`);
+        if (BADGE_IN_TITLE) {
+            console.log(`[Addon]   - Badge 🇫🇷 dans les métadonnées si sous-titres dispo`);
+        }
         console.log(`[Addon] Cache meta: ${metaCache.stats().total} entrée(s)`);
     }
 
