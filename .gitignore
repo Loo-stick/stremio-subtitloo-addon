@@ -4,6 +4,9 @@
 # Dependencies
 node_modules/
 
+# Cache
+data/cache.json
+
 # Logs
 *.log
 npm-debug.log*

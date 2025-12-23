@@ -18,6 +18,9 @@ const OpenSubtitlesClient = require('./lib/opensubtitles');
 const { RateLimitError } = require('./lib/opensubtitles');
 const SubDLClient = require('./lib/subdl');
 const YIFYClient = require('./lib/yify');
+const CinemetaClient = require('./lib/cinemeta');
+const SubtitleChecker = require('./lib/subtitle-checker');
+const PersistentCache = require('./lib/cache');
 
 // Configuration des variables d'environnement
 const PORT = parseInt(process.env.PORT, 10) || 7000;
@@ -27,6 +30,8 @@ const OS_API_KEY = process.env.OPENSUBTITLES_API_KEY;
 const OS_USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || 'stremio-subtitles-fr v1.0';
 const SUBDL_API_KEY = process.env.SUBDL_API_KEY;
 const ENABLE_YIFY = process.env.ENABLE_YIFY !== 'false';
+const ENABLE_META = process.env.ENABLE_META !== 'false';
+const CACHE_TTL_DAYS = parseInt(process.env.CACHE_TTL_DAYS, 10) || 7;
 
 // Initialisation des clients
 let osClient = null;
@@ -61,17 +66,46 @@ if (sources.length === 0) {
     process.exit(1);
 }
 
+// Initialisation des clients pour la fonctionnalité meta
+let cinemetaClient = null;
+let subtitleChecker = null;
+let metaCache = null;
+
+// La fonctionnalité meta nécessite au moins une source configurée
+const hasMetaSource = OS_API_KEY || SUBDL_API_KEY || ENABLE_YIFY;
+
+if (ENABLE_META && hasMetaSource) {
+    cinemetaClient = new CinemetaClient();
+    subtitleChecker = new SubtitleChecker({
+        osApiKey: OS_API_KEY,
+        osUserAgent: OS_USER_AGENT,
+        subdlApiKey: SUBDL_API_KEY,
+        enableYify: ENABLE_YIFY
+    });
+    metaCache = new PersistentCache({
+        ttl: CACHE_TTL_DAYS * 24 * 60 * 60 * 1000
+    });
+    console.log('[Addon] Fonctionnalité META activée (affichage dispo sous-titres)');
+} else if (ENABLE_META && !hasMetaSource) {
+    console.log('[Addon] Fonctionnalité META désactivée (aucune source configurée)');
+}
+
 /**
  * Manifest de l'addon Stremio
  */
+const resources = ['subtitles'];
+if (ENABLE_META && hasMetaSource) {
+    resources.unshift('meta'); // meta en premier pour priorité
+}
+
 const manifest = {
     id: 'community.subtitles.fr',
-    version: '1.3.0',
+    version: '1.4.0',
     name: 'Subtitles FR',
-    description: `Sous-titres français (${sources.join(' + ')})`,
+    description: `Sous-titres français (${sources.join(' + ')})${ENABLE_META && hasMetaSource ? ' + Info dispo' : ''}`,
     logo: 'https://www.opensubtitles.org/favicon.ico',
     catalogs: [],
-    resources: ['subtitles'],
+    resources: resources,
     types: ['movie', 'series'],
     idPrefixes: ['tt'],
     behaviorHints: {
@@ -133,6 +167,96 @@ builder.defineSubtitlesHandler(async (args) => {
         return { subtitles: [] };
     }
 });
+
+/**
+ * Handler pour les requêtes de métadonnées (affichage dispo sous-titres)
+ */
+if (ENABLE_META && cinemetaClient && subtitleChecker) {
+    builder.defineMetaHandler(async (args) => {
+        const { type, id } = args;
+
+        console.log(`\n[Addon] === Nouvelle requête meta ===`);
+        console.log(`[Addon] Type: ${type}, ID: ${id}`);
+
+        // Extrait l'ID IMDB
+        const imdbId = id.split(':')[0];
+
+        if (!imdbId || !imdbId.match(/^tt\d+$/)) {
+            console.log('[Addon] ID IMDB invalide');
+            return { meta: null };
+        }
+
+        try {
+            // Vérifie le cache d'abord
+            let subtitleInfo = metaCache.get(imdbId);
+            let needsCheck = subtitleInfo === null;
+
+            // Appels en parallèle
+            const promises = [
+                cinemetaClient.getMeta(type, imdbId)
+            ];
+
+            if (needsCheck) {
+                promises.push(subtitleChecker.checkAll(imdbId, type));
+            }
+
+            const results = await Promise.all(promises);
+
+            const meta = results[0];
+            if (needsCheck) {
+                subtitleInfo = results[1];
+
+                if (subtitleInfo !== null) {
+                    metaCache.set(imdbId, subtitleInfo);
+                }
+            }
+
+            if (!meta) {
+                console.log('[Addon] Pas de métadonnées Cinemeta');
+                return { meta: null };
+            }
+
+            // Enrichit la description
+            meta.description = enrichDescription(meta.description, subtitleInfo);
+
+            console.log(`[Addon] Meta enrichie: "${meta.name}"`);
+            return { meta };
+
+        } catch (error) {
+            console.error('[Addon] Erreur handler meta:', error.message);
+            return { meta: null };
+        }
+    });
+}
+
+/**
+ * Enrichit la description avec l'information de disponibilité des sous-titres
+ *
+ * @param {string} originalDesc - Description originale
+ * @param {Object|null} subtitleInfo - Info sous-titres { available, count, sources } ou null
+ * @returns {string} Description enrichie
+ */
+function enrichDescription(originalDesc, subtitleInfo) {
+    let prefix = '';
+
+    if (subtitleInfo === null) {
+        prefix = 'Sous-titres FR : info non disponible\n\n';
+    } else if (subtitleInfo.available) {
+        // Détails par source
+        const details = [];
+        if (subtitleInfo.sources) {
+            if (subtitleInfo.sources.os?.count) details.push(`OS:${subtitleInfo.sources.os.count}`);
+            if (subtitleInfo.sources.subdl?.count) details.push(`SubDL:${subtitleInfo.sources.subdl.count}`);
+            if (subtitleInfo.sources.yify?.count) details.push(`YIFY:${subtitleInfo.sources.yify.count}`);
+        }
+        const detailStr = details.length > 0 ? ` (${details.join(', ')})` : '';
+        prefix = `Sous-titres FR disponibles${detailStr}\n\n`;
+    } else {
+        prefix = 'Pas de sous-titres FR disponibles\n\n';
+    }
+
+    return prefix + (originalDesc || '');
+}
 
 /**
  * Recherche des sous-titres sur OpenSubtitles
@@ -292,13 +416,49 @@ app.get('/proxy/os/:fileId', async (req, res) => {
     }
 });
 
+// Route de santé
+app.get('/health', (req, res) => {
+    const response = {
+        status: 'ok',
+        version: manifest.version,
+        sources: sources,
+        metaEnabled: !!metaCache
+    };
+
+    if (metaCache) {
+        response.cache = metaCache.stats();
+    }
+
+    res.json(response);
+});
+
+// Routes de gestion du cache (si meta activé)
+if (metaCache) {
+    app.get('/cache/clear', (req, res) => {
+        metaCache.clear();
+        console.log('[Addon] Cache vidé via /cache/clear');
+        res.json({ success: true, message: 'Cache vidé' });
+    });
+
+    app.get('/cache/invalidate/:imdbId', (req, res) => {
+        const { imdbId } = req.params;
+        const deleted = metaCache.invalidate(imdbId);
+        console.log(`[Addon] Cache invalidé pour ${imdbId}: ${deleted ? 'supprimé' : 'non trouvé'}`);
+        res.json({ success: deleted, imdbId, message: deleted ? 'Entrée supprimée' : 'Entrée non trouvée' });
+    });
+
+    app.get('/stats', (req, res) => {
+        res.json(metaCache.stats());
+    });
+}
+
 // Monte le router Stremio sur l'app Express
 app.use(getRouter(builder.getInterface()));
 
 // Démarrage du serveur
 app.listen(PORT, () => {
     console.log(`\n[Addon] ========================================`);
-    console.log(`[Addon] Subtitles FR Addon v1.3.0 démarré!`);
+    console.log(`[Addon] Subtitles FR Addon v${manifest.version} démarré!`);
     console.log(`[Addon] Sources: ${sources.join(', ')}`);
     console.log(`[Addon] Port: ${PORT}`);
 
@@ -321,5 +481,28 @@ app.listen(PORT, () => {
     console.log(`[Addon]   - Cache des liens (TTL 3h)`);
     console.log(`[Addon]   - Dédup in-flight (évite les appels simultanés)`);
     console.log(`[Addon]   - Max 5 résultats par source`);
+
+    if (metaCache) {
+        console.log(`[Addon]   - Info dispo sous-titres sur fiche (cache ${CACHE_TTL_DAYS}j)`);
+        console.log(`[Addon] Cache meta: ${metaCache.stats().total} entrée(s)`);
+    }
+
     console.log(`[Addon] ========================================\n`);
+});
+
+// Gestion de l'arrêt propre
+process.on('SIGTERM', () => {
+    console.log('[Addon] Arrêt demandé...');
+    if (metaCache) {
+        metaCache.stop();
+    }
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    console.log('\n[Addon] Interruption...');
+    if (metaCache) {
+        metaCache.stop();
+    }
+    process.exit(0);
 });

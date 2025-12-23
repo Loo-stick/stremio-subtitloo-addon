@@ -2,6 +2,15 @@
 
 Addon Stremio pour recuperer des sous-titres francais depuis plusieurs sources.
 
+## Nouveaute v1.4.0 : Info disponibilite
+
+L'addon affiche maintenant sur la fiche du film/serie si des sous-titres francais sont disponibles, en verifiant sur **les 3 sources** (OpenSubtitles, SubDL, YIFY) :
+
+- `Sous-titres FR disponibles (OS:5, SubDL:3, YIFY:2)` - Details par source
+- `Pas de sous-titres FR disponibles` - Aucun sous-titre trouve
+
+Cette info est cachee pendant 7 jours pour eviter les appels API repetes.
+
 ## Sources supportees
 
 | Source | Contenu | API Key | Prefixe |
@@ -92,13 +101,18 @@ Les sous-titres sont affiches avec leur source :
 
 ```
 stremio-subtitles-fr/
-├── index.js              # Serveur Express + Stremio SDK
+├── index.js                    # Serveur Express + Stremio SDK
 ├── lib/
-│   ├── opensubtitles.js  # Client API + cache + proxy
-│   ├── subdl.js          # Client API SubDL
-│   └── yify.js           # Client API YIFY
+│   ├── opensubtitles.js        # Client API + cache + proxy
+│   ├── subtitle-checker.js     # Verificateur dispo multi-sources
+│   ├── cinemeta.js             # Client API Cinemeta
+│   ├── cache.js                # Cache persistant JSON
+│   ├── subdl.js                # Client API SubDL
+│   └── yify.js                 # Client API YIFY
+├── data/
+│   └── cache.json              # Cache des verifications (gitignore)
 ├── .env.example
-├── .env                  # Credentials (gitignore)
+├── .env                        # Credentials (gitignore)
 ├── .gitignore
 ├── package.json
 └── README.md
@@ -113,7 +127,18 @@ stremio-subtitles-fr/
 | `OPENSUBTITLES_USER_AGENT` | User-Agent custom | Non |
 | `SUBDL_API_KEY` | Cle API SubDL | Non |
 | `ENABLE_YIFY` | Activer YIFY (defaut: true) | Non |
+| `ENABLE_META` | Activer info dispo sur fiche (defaut: true) | Non |
+| `CACHE_TTL_DAYS` | Duree du cache en jours (defaut: 7) | Non |
 | `PORT` | Port du serveur (defaut: 7000) | Non |
+
+## Routes utiles
+
+| Route | Description |
+|-------|-------------|
+| `/health` | Statut de l'addon |
+| `/stats` | Statistiques du cache |
+| `/cache/clear` | Vider le cache |
+| `/cache/invalidate/:imdbId` | Invalider une entree (ex: `/cache/invalidate/tt1234567`) |
 
 ## Comment ca marche (OpenSubtitles)
 
