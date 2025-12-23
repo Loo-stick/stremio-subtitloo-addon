@@ -2,7 +2,18 @@
 
 Addon Stremio pour recuperer des sous-titres francais depuis plusieurs sources.
 
-## Nouveaute v1.4.0 : Info disponibilite
+## Nouveaute v1.4.1 : Cache des recherches
+
+Les resultats de recherche de sous-titres sont maintenant mis en cache pendant 24h (configurable). Avantages :
+- Reponse instantanee si vous relancez le meme episode/film
+- Moins d'appels API = moins de risque de rate limiting
+- Economise votre quota API
+
+Routes utiles :
+- `/subtitles-cache/stats` : Voir les stats du cache (hits, misses, hit rate)
+- `/subtitles-cache/clear` : Vider le cache
+
+## Info disponibilite (v1.4.0)
 
 L'addon affiche maintenant sur la fiche du film/serie si des sous-titres francais sont disponibles, en verifiant sur **les 3 sources** (OpenSubtitles, SubDL, YIFY) :
 
@@ -126,6 +137,7 @@ stremio-subtitles-fr/
 | `OPENSUBTITLES_API_KEY` | Cle API OpenSubtitles | Non |
 | `OPENSUBTITLES_USER_AGENT` | User-Agent custom | Non |
 | `SUBDL_API_KEY` | Cle API SubDL | Non |
+| `SUBTITLES_CACHE_TTL_HOURS` | Duree du cache sous-titres en heures (defaut: 24) | Non |
 | `ENABLE_YIFY` | Activer YIFY (defaut: true) | Non |
 | `ENABLE_META` | Activer info dispo sur fiche (defaut: true) | Non |
 | `CACHE_TTL_DAYS` | Duree du cache en jours (defaut: 7) | Non |

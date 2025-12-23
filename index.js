@@ -32,6 +32,109 @@ const SUBDL_API_KEY = process.env.SUBDL_API_KEY;
 const ENABLE_YIFY = process.env.ENABLE_YIFY !== 'false';
 const ENABLE_META = process.env.ENABLE_META !== 'false';
 const CACHE_TTL_DAYS = parseInt(process.env.CACHE_TTL_DAYS, 10) || 7;
+const SUBTITLES_CACHE_TTL_HOURS = parseInt(process.env.SUBTITLES_CACHE_TTL_HOURS, 10) || 24;
+
+/**
+ * Cache en mémoire pour les recherches de sous-titres
+ * Évite de refaire les mêmes appels API pour un même contenu
+ */
+class SubtitlesCache {
+    constructor(ttlMs) {
+        this.cache = new Map();
+        this.ttl = ttlMs;
+        this.hits = 0;
+        this.misses = 0;
+
+        // Nettoyage périodique toutes les 30 minutes
+        setInterval(() => this.cleanup(), 30 * 60 * 1000);
+    }
+
+    /**
+     * Génère une clé de cache unique pour une requête
+     */
+    generateKey(type, id) {
+        return `${type}:${id}`;
+    }
+
+    /**
+     * Récupère les sous-titres du cache
+     */
+    get(type, id) {
+        const key = this.generateKey(type, id);
+        const item = this.cache.get(key);
+
+        if (!item) {
+            this.misses++;
+            return null;
+        }
+
+        if (Date.now() > item.expiry) {
+            this.cache.delete(key);
+            this.misses++;
+            return null;
+        }
+
+        this.hits++;
+        return item.subtitles;
+    }
+
+    /**
+     * Stocke les sous-titres dans le cache
+     */
+    set(type, id, subtitles) {
+        const key = this.generateKey(type, id);
+        this.cache.set(key, {
+            subtitles,
+            expiry: Date.now() + this.ttl,
+            timestamp: Date.now()
+        });
+    }
+
+    /**
+     * Nettoie les entrées expirées
+     */
+    cleanup() {
+        const now = Date.now();
+        let cleaned = 0;
+        for (const [key, item] of this.cache.entries()) {
+            if (now > item.expiry) {
+                this.cache.delete(key);
+                cleaned++;
+            }
+        }
+        if (cleaned > 0) {
+            console.log(`[SubtitlesCache] Nettoyage: ${cleaned} entrée(s) expirée(s) supprimée(s)`);
+        }
+    }
+
+    /**
+     * Vide le cache
+     */
+    clear() {
+        this.cache.clear();
+        this.hits = 0;
+        this.misses = 0;
+    }
+
+    /**
+     * Retourne les statistiques du cache
+     */
+    stats() {
+        return {
+            entries: this.cache.size,
+            hits: this.hits,
+            misses: this.misses,
+            hitRate: this.hits + this.misses > 0
+                ? ((this.hits / (this.hits + this.misses)) * 100).toFixed(1) + '%'
+                : 'N/A',
+            ttlHours: this.ttl / (60 * 60 * 1000)
+        };
+    }
+}
+
+// Cache des recherches de sous-titres (TTL configurable, défaut 24h)
+const subtitlesCache = new SubtitlesCache(SUBTITLES_CACHE_TTL_HOURS * 60 * 60 * 1000);
+console.log(`[Addon] Cache sous-titres activé (TTL: ${SUBTITLES_CACHE_TTL_HOURS}h)`);
 
 // Initialisation des clients
 let osClient = null;
@@ -100,7 +203,7 @@ if (ENABLE_META && hasMetaSource) {
 
 const manifest = {
     id: 'community.subtitles.fr',
-    version: '1.4.0',
+    version: '1.4.1',
     name: 'Subtitles FR',
     description: `Sous-titres français (${sources.join(' + ')})${ENABLE_META && hasMetaSource ? ' + Info dispo' : ''}`,
     logo: 'https://www.opensubtitles.org/favicon.ico',
@@ -134,6 +237,14 @@ builder.defineSubtitlesHandler(async (args) => {
             return { subtitles: [] };
         }
 
+        // Vérifie le cache d'abord
+        const cachedSubtitles = subtitlesCache.get(type, id);
+        if (cachedSubtitles !== null) {
+            console.log(`[Addon] Cache HIT - ${cachedSubtitles.length} sous-titre(s)`);
+            return { subtitles: cachedSubtitles };
+        }
+
+        console.log(`[Addon] Cache MISS - Recherche sur les APIs...`);
         console.log(`[Addon] IMDB ID: ${parsed.imdbId}`);
 
         // Recherche en parallèle sur toutes les sources
@@ -154,12 +265,15 @@ builder.defineSubtitlesHandler(async (args) => {
         const results = await Promise.all(searchPromises);
         const allSubtitles = results.flat();
 
+        // Stocke dans le cache (même si vide, pour éviter de refaire la recherche)
+        subtitlesCache.set(type, id, allSubtitles);
+
         if (allSubtitles.length === 0) {
             console.log('[Addon] Aucun sous-titre trouvé sur aucune source');
             return { subtitles: [] };
         }
 
-        console.log(`[Addon] Total: ${allSubtitles.length} sous-titre(s) combinés`);
+        console.log(`[Addon] Total: ${allSubtitles.length} sous-titre(s) combinés (mis en cache)`);
         return { subtitles: allSubtitles };
 
     } catch (error) {
@@ -422,14 +536,26 @@ app.get('/health', (req, res) => {
         status: 'ok',
         version: manifest.version,
         sources: sources,
-        metaEnabled: !!metaCache
+        metaEnabled: !!metaCache,
+        subtitlesCache: subtitlesCache.stats()
     };
 
     if (metaCache) {
-        response.cache = metaCache.stats();
+        response.metaCache = metaCache.stats();
     }
 
     res.json(response);
+});
+
+// Routes de gestion du cache des sous-titres
+app.get('/subtitles-cache/stats', (req, res) => {
+    res.json(subtitlesCache.stats());
+});
+
+app.get('/subtitles-cache/clear', (req, res) => {
+    subtitlesCache.clear();
+    console.log('[Addon] Cache sous-titres vidé via /subtitles-cache/clear');
+    res.json({ success: true, message: 'Cache sous-titres vidé' });
 });
 
 // Routes de gestion du cache (si meta activé)
@@ -478,7 +604,8 @@ app.listen(PORT, () => {
     console.log(`[Addon] ========================================\n`);
     console.log(`[Addon] ⚡ Optimisations activées:`);
     console.log(`[Addon]   - Proxy pour OpenSubtitles (lazy download)`);
-    console.log(`[Addon]   - Cache des liens (TTL 3h)`);
+    console.log(`[Addon]   - Cache des liens OpenSubtitles (TTL 3h)`);
+    console.log(`[Addon]   - Cache des recherches sous-titres (TTL ${SUBTITLES_CACHE_TTL_HOURS}h)`);
     console.log(`[Addon]   - Dédup in-flight (évite les appels simultanés)`);
     console.log(`[Addon]   - Max 5 résultats par source`);
 
