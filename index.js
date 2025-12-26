@@ -204,7 +204,7 @@ if (ENABLE_META && hasMetaSource) {
 
 const manifest = {
     id: 'community.subtitles.fr',
-    version: '1.5.3',
+    version: '1.5.4',
     name: 'Subtitles FR',
     description: `Sous-titres français (${sources.join(' + ')})${ENABLE_META && hasMetaSource ? ' + Info dispo' : ''}`,
     logo: 'https://www.opensubtitles.org/favicon.ico',
