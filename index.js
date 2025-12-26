@@ -204,7 +204,7 @@ if (ENABLE_META && hasMetaSource) {
 
 const manifest = {
     id: 'community.subtitles.fr',
-    version: '1.4.2',
+    version: '1.5.0',
     name: 'Subtitles FR',
     description: `Sous-titres français (${sources.join(' + ')})${ENABLE_META && hasMetaSource ? ' + Info dispo' : ''}`,
     logo: 'https://www.opensubtitles.org/favicon.ico',
@@ -225,23 +225,42 @@ const builder = new addonBuilder(manifest);
  * Handler pour les requêtes de sous-titres
  */
 builder.defineSubtitlesHandler(async (args) => {
-    const { type, id } = args;
+    const { type, id, extra } = args;
 
     console.log(`\n[Addon] === Nouvelle requête sous-titres ===`);
     console.log(`[Addon] Type: ${type}, ID: ${id}`);
 
+    // Extraction des infos de fichier depuis extra (Stremio les fournit)
+    const videoHash = extra?.videoHash || null;
+    const videoSize = extra?.videoSize ? parseInt(extra.videoSize, 10) : null;
+    const filename = extra?.filename || null;
+
+    if (videoHash || filename) {
+        console.log(`[Addon] Infos fichier: hash=${videoHash || 'N/A'}, size=${videoSize || 'N/A'}, file=${filename || 'N/A'}`);
+    }
+
     try {
-        const parsed = parseId(id, type);
+        const parsed = parseId(id, type, extra || {});
 
         if (!parsed.imdbId) {
             console.log('[Addon] ID IMDB invalide');
             return { subtitles: [] };
         }
 
+        // Génère une clé de cache unique (sans les infos de fichier pour réutiliser le cache)
+        const cacheKey = id;
+
         // Vérifie le cache d'abord
-        const cachedSubtitles = subtitlesCache.get(type, id);
+        const cachedSubtitles = subtitlesCache.get(type, cacheKey);
         if (cachedSubtitles !== null) {
             console.log(`[Addon] Cache HIT - ${cachedSubtitles.length} sous-titre(s)`);
+
+            // Si on a des infos de fichier, on retrie les résultats cachés
+            if (filename || videoHash) {
+                const sortedSubtitles = sortSubtitlesByMatch(cachedSubtitles, parsed);
+                return { subtitles: sortedSubtitles };
+            }
+
             return { subtitles: cachedSubtitles };
         }
 
@@ -267,21 +286,72 @@ builder.defineSubtitlesHandler(async (args) => {
         const allSubtitles = results.flat();
 
         // Stocke dans le cache (même si vide, pour éviter de refaire la recherche)
-        subtitlesCache.set(type, id, allSubtitles);
+        subtitlesCache.set(type, cacheKey, allSubtitles);
 
         if (allSubtitles.length === 0) {
             console.log('[Addon] Aucun sous-titre trouvé sur aucune source');
             return { subtitles: [] };
         }
 
-        console.log(`[Addon] Total: ${allSubtitles.length} sous-titre(s) combinés (mis en cache)`);
-        return { subtitles: allSubtitles };
+        // Tri par score de correspondance si on a des infos de fichier
+        const sortedSubtitles = sortSubtitlesByMatch(allSubtitles, parsed);
+
+        console.log(`[Addon] Total: ${sortedSubtitles.length} sous-titre(s) combinés (mis en cache)`);
+        return { subtitles: sortedSubtitles };
 
     } catch (error) {
         console.error('[Addon] Erreur handler sous-titres:', error.message);
         return { subtitles: [] };
     }
 });
+
+/**
+ * Trie les sous-titres par score de correspondance avec le fichier vidéo
+ *
+ * @param {Array} subtitles - Liste des sous-titres
+ * @param {Object} parsed - Infos parsées (incluant filename, videoHash)
+ * @returns {Array} Sous-titres triés par score décroissant
+ */
+function sortSubtitlesByMatch(subtitles, parsed) {
+    // Si pas d'infos de fichier, on garde l'ordre original
+    if (!parsed.filename && !parsed.videoHash) {
+        return subtitles;
+    }
+
+    const videoInfo = parseReleaseName(parsed.filename);
+
+    // Calcule le score pour chaque sous-titre
+    const scoredSubtitles = subtitles.map(sub => {
+        const isHashMatch = sub._hashMatch === true;
+        const score = calculateMatchScore(sub, videoInfo, isHashMatch);
+
+        return {
+            ...sub,
+            _score: score
+        };
+    });
+
+    // Trie par score décroissant
+    scoredSubtitles.sort((a, b) => b._score - a._score);
+
+    // Log les premiers résultats pour debug
+    const topResults = scoredSubtitles.slice(0, 3);
+    if (topResults.length > 0 && topResults[0]._score > 0) {
+        console.log(`[Addon] Top 3 matchs:`);
+        topResults.forEach((sub, i) => {
+            console.log(`  ${i + 1}. Score ${sub._score}: ${sub._release || sub.SubFileName}`);
+        });
+    }
+
+    // Nettoie les propriétés internes avant de retourner
+    return scoredSubtitles.map(sub => {
+        const cleaned = { ...sub };
+        delete cleaned._score;
+        delete cleaned._release;
+        delete cleaned._hashMatch;
+        return cleaned;
+    });
+}
 
 /**
  * Handler pour les requêtes de métadonnées (affichage dispo sous-titres)
@@ -426,19 +496,21 @@ function enrichReleaseInfo(originalReleaseInfo, subtitleInfo) {
  */
 async function searchOpenSubtitles(parsed) {
     try {
-        const subtitles = await osClient.searchSubtitles({
+        const searchResult = await osClient.searchSubtitles({
             imdbId: parsed.imdbId,
             type: parsed.type,
             season: parsed.season,
-            episode: parsed.episode
+            episode: parsed.episode,
+            videoHash: parsed.videoHash,
+            videoSize: parsed.videoSize
         });
 
-        if (subtitles.length === 0) {
+        if (searchResult.subtitles.length === 0) {
             return [];
         }
 
         // Passe l'URL de l'addon pour générer les URLs de proxy
-        return osClient.formatForStremio(subtitles, addonUrl);
+        return osClient.formatForStremio(searchResult, addonUrl);
     } catch (error) {
         console.error('[Addon] Erreur OpenSubtitles:', error.message);
         return [];
@@ -491,13 +563,22 @@ async function searchYIFY(parsed) {
 
 /**
  * Parse l'identifiant Stremio pour extraire les informations
+ *
+ * @param {string} id - ID Stremio (ex: tt1234567 ou tt1234567:1:2)
+ * @param {string} type - Type de contenu (movie ou series)
+ * @param {Object} extra - Paramètres extra de Stremio
+ * @returns {Object} Infos parsées
  */
-function parseId(id, type) {
+function parseId(id, type, extra = {}) {
     const result = {
         imdbId: null,
         type: type,
         season: null,
-        episode: null
+        episode: null,
+        // Infos fichier pour matching
+        videoHash: extra.videoHash || null,
+        videoSize: extra.videoSize ? parseInt(extra.videoSize, 10) : null,
+        filename: extra.filename || null
     };
 
     if (!id) return result;
@@ -516,6 +597,132 @@ function parseId(id, type) {
     }
 
     return result;
+}
+
+/**
+ * Parse le nom d'un fichier pour extraire les infos de release
+ *
+ * @param {string} filename - Nom du fichier vidéo
+ * @returns {Object} Infos extraites (group, quality, source, codec, etc.)
+ */
+function parseReleaseName(filename) {
+    if (!filename) return {};
+
+    const result = {
+        original: filename,
+        normalized: filename.toLowerCase().replace(/[._-]/g, ' '),
+        group: null,
+        quality: null,
+        source: null,
+        codec: null,
+        year: null
+    };
+
+    // Extrait le groupe de release (généralement à la fin après un tiret)
+    const groupMatch = filename.match(/-([A-Za-z0-9]+)(?:\.[a-z]{2,4})?$/i);
+    if (groupMatch) {
+        result.group = groupMatch[1].toUpperCase();
+    }
+
+    // Qualité vidéo
+    const qualityPatterns = [
+        { pattern: /2160p|4k|uhd/i, value: '2160p' },
+        { pattern: /1080p/i, value: '1080p' },
+        { pattern: /720p/i, value: '720p' },
+        { pattern: /480p/i, value: '480p' },
+        { pattern: /hdtv/i, value: 'HDTV' }
+    ];
+    for (const { pattern, value } of qualityPatterns) {
+        if (pattern.test(filename)) {
+            result.quality = value;
+            break;
+        }
+    }
+
+    // Source
+    const sourcePatterns = [
+        { pattern: /bluray|blu-ray|bdrip|brrip/i, value: 'BluRay' },
+        { pattern: /webrip|web-rip/i, value: 'WEBRip' },
+        { pattern: /web-dl|webdl/i, value: 'WEB-DL' },
+        { pattern: /hdtv/i, value: 'HDTV' },
+        { pattern: /dvdrip/i, value: 'DVDRip' }
+    ];
+    for (const { pattern, value } of sourcePatterns) {
+        if (pattern.test(filename)) {
+            result.source = value;
+            break;
+        }
+    }
+
+    // Codec
+    const codecPatterns = [
+        { pattern: /x265|h\.?265|hevc/i, value: 'x265' },
+        { pattern: /x264|h\.?264|avc/i, value: 'x264' }
+    ];
+    for (const { pattern, value } of codecPatterns) {
+        if (pattern.test(filename)) {
+            result.codec = value;
+            break;
+        }
+    }
+
+    // Année
+    const yearMatch = filename.match(/[.\s([]?(19|20)\d{2}[.\s)\]]/);
+    if (yearMatch) {
+        result.year = yearMatch[0].replace(/[.\s()[\]]/g, '');
+    }
+
+    return result;
+}
+
+/**
+ * Calcule un score de correspondance entre un sous-titre et un fichier vidéo
+ *
+ * @param {Object} subtitle - Sous-titre avec ses infos
+ * @param {Object} videoInfo - Infos du fichier vidéo parsées
+ * @param {boolean} hashMatch - True si le hash correspond
+ * @returns {number} Score (0-100)
+ */
+function calculateMatchScore(subtitle, videoInfo, hashMatch = false) {
+    // Hash match = score parfait
+    if (hashMatch) return 100;
+
+    let score = 0;
+    const subRelease = subtitle.release || subtitle.SubFileName || '';
+    const subInfo = parseReleaseName(subRelease);
+
+    // Match du groupe de release (+40 points)
+    if (videoInfo.group && subInfo.group && videoInfo.group === subInfo.group) {
+        score += 40;
+    }
+
+    // Match de la qualité (+20 points)
+    if (videoInfo.quality && subInfo.quality && videoInfo.quality === subInfo.quality) {
+        score += 20;
+    }
+
+    // Match de la source (+15 points)
+    if (videoInfo.source && subInfo.source && videoInfo.source === subInfo.source) {
+        score += 15;
+    }
+
+    // Match du codec (+10 points)
+    if (videoInfo.codec && subInfo.codec && videoInfo.codec === subInfo.codec) {
+        score += 10;
+    }
+
+    // Bonus si le nom normalisé contient des mots communs (+5 points max)
+    if (videoInfo.normalized && subInfo.normalized) {
+        const videoWords = new Set(videoInfo.normalized.split(/\s+/).filter(w => w.length > 2));
+        const subWords = new Set(subInfo.normalized.split(/\s+/).filter(w => w.length > 2));
+        let commonWords = 0;
+        for (const word of videoWords) {
+            if (subWords.has(word)) commonWords++;
+        }
+        score += Math.min(commonWords, 5);
+    }
+
+    return score;
 }
 
 // ============================================
@@ -657,6 +864,7 @@ app.listen(PORT, () => {
     console.log(`[Addon]   - Cache des recherches sous-titres (TTL ${SUBTITLES_CACHE_TTL_HOURS}h)`);
     console.log(`[Addon]   - Dédup in-flight (évite les appels simultanés)`);
     console.log(`[Addon]   - Max 5 résultats par source`);
+    console.log(`[Addon]   - File matching (hash + release name scoring)`);
 
     if (metaCache) {
         console.log(`[Addon]   - Info dispo sous-titres sur fiche (cache ${CACHE_TTL_DAYS}j)`);
